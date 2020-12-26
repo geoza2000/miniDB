@@ -581,3 +581,221 @@ class Database:
         index = pickle.load(f)
         f.close()
         return index
+
+    SQL_COMMANDS = {
+        'UPDATE': 0,
+        'INSERT': 1,
+        'DELETE': 2,
+        'CREATE': 3,
+        'DROP': 4
+    }
+
+    def _is_sql_command(self, string):
+        '''
+        TODO: Description
+        '''
+
+        return self.SQL_COMMANDS.get(string, -1)
+
+    def _sql_delete(self, splittedQueries):
+        '''
+        TODO: Description
+        condition -> a condition using the following format :
+                    'column[<,<=,=,>=,>]value' or
+                    'value[<,<=,=,>=,>]column'.
+
+                    operatores supported -> (<,<=,=,>=,>)
+        '''
+
+        if len(splittedQueries) >= 5:
+            if splittedQueries[1] == 'FROM':
+                if splittedQueries[3] == 'WHERE':
+                    condition = " ".join(splittedQueries[4:])
+                    if condition.count("'") == len(splittedQueries[4:]) * 2:
+                        condition = condition.replace("'",'').replace('=','==')
+                        self.delete(splittedQueries[2], condition)
+                else:
+                    print('You must specify the "WHERE condition"')
+            else:
+                print('You must specify the "FROM table_name" sub-command')
+        else:
+            print('Invalid length of arguments. DELETE command must include 5 parameters (e.g. DELETE FROM table_name WHERE condition;)')
+
+    def _sql_create(self, splittedQueries):
+        '''
+        TODO: Description
+        '''
+        
+        SQL_CREATE_COMMANDS = {
+            'INDEX': 0,
+            'TABLE': 1
+        }
+        
+        if len(splittedQueries) >= 3:
+            sub_command = SQL_CREATE_COMMANDS.get(splittedQueries[1], -1)
+            if sub_command == 0:
+                if len(splittedQueries) == 5:
+                    if splittedQueries[3] == "ON":
+                        self.create_index(splittedQueries[4], splittedQueries[2], )
+                    else:
+                        print('You must specify the "ON table_name" sub-command')
+                else:
+                    print('Invalid length of arguments. An index can only be created on a primary key. Thus you can\'t specify the columns of the index. Thus CREATE INDEX command must include 5 parameters (e.g. CREATE INDEX index_name ON table_name;)')
+            elif sub_command == 1:
+                columnNames = []
+                columnTypes = []
+                condition = " ".join(splittedQueries[-(len(splittedQueries) - 3):])
+                if condition[0] == "(" and condition[-1] == ")":
+                    for column in condition[:-1][1:].split(","):
+                        splittedColumn = column.strip().split(" ")
+                        if len(splittedColumn) == 2:
+                            columnNames.append(splittedColumn[0])
+                            if splittedColumn[1] == 'int':
+                                columnTypes.append(int)
+                            elif splittedColumn[1].startswith("char") or splittedColumn[1].startswith("varchar") or splittedColumn[1].startswith("varchar") or splittedColumn[1] == "text":
+                                columnTypes.append(str)
+                            else:
+                                print(f'Column data type {splittedColumn[1]} is not supported. Supprted column data types are int, str, char(), varchar(), varchar(), text')
+                                return
+                        else:
+                            print('Column definition must have 2 parameters (e.g. column_name column_type)')
+                            return
+                    self.create_table(splittedQueries[2], columnNames, columnTypes)
+                else:
+                    print('Column definition starts and ends with parenthesis')
+            else:
+                print(f'Invalid SQL sub-command. Valid CREATE SQL sub-commands are {", ".join(SQL_CREATE_COMMANDS)}')
+        else:
+            print('Invalid length of arguments. CREATE command must include at least 3 parameters (e.g. CREATE DATABASE databasename;)')
+
+    def _sql_drop(self, splittedQueries):
+        '''
+        TODO: Description
+        '''
+
+        if len(splittedQueries) == 3:
+            if splittedQueries[1] == 'TABLE':
+                print(splittedQueries[2])
+                self.drop_table(splittedQueries[2])
+            else:
+                print('You can only drop tables')
+        else:
+            print('Invalid length of arguments. DROP command must include 3 parameters (e.g. DROP TABLE table_name;)')
+
+    def _sql_update(self, splittedQueries):
+        '''
+        TODO: Description
+
+        condition -> a condition using the following format :
+                    'column[<,<=,=,>=,>]value' or
+                    'value[<,<=,=,>=,>]column'.
+
+                    operatores supported -> (<,<=,=,>=,>)
+        '''
+        
+        if len(splittedQueries) >= 6:
+            if splittedQueries[2] == 'SET':
+                jointQueries = " ".join(splittedQueries[3:])
+                columnsAndContition = jointQueries.split('WHERE')
+                if len(columnsAndContition) == 2:
+                    columnsAndContition[1] = columnsAndContition[1].replace("'",'').replace('=','==')
+                    columns = []
+                    for column in columnsAndContition[0].split(','):
+                        splittedColumn = column.strip().split('=')
+                        if len(splittedColumn) == 2:
+                            if splittedColumn[1][0] == "'" and splittedColumn[1][-1] == "'":
+                                splittedColumn[1] = splittedColumn[1][:-1][1:]
+                            columns.append(splittedColumn)
+                        else:
+                            print('Column definition must be of the format (e.g. column_name=column_value)')
+                            return
+                    for column in columns:
+                        self.update(splittedQueries[1], column[1].strip(), column[0].strip(), columnsAndContition[1])
+                else:
+                    print('You must specify the "WHERE condition"')
+            else:
+                print('You must specify the "SET column1 = value1, ..."')
+        else:
+            print('Invalid length of arguments. UPDATE command must include at least 6 parameters (e.g. UPDATE table_name SET column1 = value1, column2 = value2, ... WHERE condition;)')
+
+    def _sql_insert(self, splittedQueries):
+        '''
+        TODO: Description
+        '''
+
+        if len(splittedQueries) >= 6:
+            if splittedQueries[1] == 'INTO':
+                jointQueries = " ".join(splittedQueries[3:])
+                columnsAndValues = jointQueries.split('VALUES')
+                if len(columnsAndValues) == 2:
+                    columns = []
+                    values = []
+                    if columnsAndValues[0].strip()[0] == "(" and columnsAndValues[0].strip()[-1] == ")":
+                        for column in columnsAndValues[0].strip()[:-1][1:].split(","):
+                            columns.append(column.strip())
+                    else:
+                        print('Columns definition starts and ends with parenthesis')
+                    if columnsAndValues[1].strip()[0] == "(" and columnsAndValues[1].strip()[-1] == ")":
+                        for value in columnsAndValues[1].strip()[:-1][1:].split(","):
+                            if value.strip()[0] == "'" and value.strip()[-1] == "'":
+                                value = value.strip()[:-1][1:]
+                            values.append(value)
+                    else:
+                        print('Values definition starts and ends with parenthesis')
+                    if len(columns) == len(values):
+                        table_columns = self.tables[splittedQueries[2]].column_names
+                        if len(columns) == len(table_columns):
+                            for column in columns:
+                                if column not in table_columns:
+                                    print(f'Defined column "{column}" is not present in table "{splittedQueries[2]}"')
+                                    return
+                            orderedValues = []
+                            for column in table_columns:
+                                orderedValues.append(values[columns.index(column)])
+                            self.insert(splittedQueries[2], orderedValues)
+                        else:
+                            print(f'Columns defined size is deferent than the defined table ("{splittedQueries[2]}") columns size')
+                    else:
+                        print('Column defined size is not equal with the values size')
+                else:
+                    print('You must specify the "VALUES (value1, value2, value3, ...)"')
+            else:
+                print('You must specify the "INTO table_name"')
+        else:
+            print('Invalid length of arguments. INSERT command must include at least 6 parameters (e.g. INSERT INTO table_name (column1, column2, column3, ...) VALUES (value1, value2, value3, ...);)')
+
+    def sql(self, query):
+        '''
+        Execute SQL Queries
+
+        IMPLEMENTED     2. UPDATE table_name SET column1 = value1, column2 = value2, ... WHERE condition;
+        IMPLEMENTED     3. INSERT INTO table_name (column1, column2, column3, ...) VALUES (value1, value2, value3, ...);
+        IMPLEMENTED     4. DELETE FROM table_name WHERE condition;
+        IMPLEMENTED     5a. CREATE TABLE table_name (column1 datatype, column2 datatype, column3 datatype, ....);
+        IMPLEMENTED     5b. DROP TABLE table_name;
+        IMPLEMENTED     7. CREATE INDEX index_name ON table_name (column1, column2, ...);
+        '''
+
+        splittedQueries = query.split(' ')
+        if len(splittedQueries) > 0:
+            if splittedQueries[-1][-1] == ';':
+                splittedQueries[-1] = splittedQueries[-1][:-1]
+                case_SQL_command = self._is_sql_command(splittedQueries[0])
+                if case_SQL_command == 0:
+                    self._sql_update(splittedQueries)
+                elif case_SQL_command == 1:
+                    self._sql_insert(splittedQueries)
+                elif case_SQL_command == 2:
+                    self._sql_delete(splittedQueries)
+                elif case_SQL_command == 3:
+                    self._sql_create(splittedQueries)
+                elif case_SQL_command == 4:
+                    self._sql_drop(splittedQueries)
+                elif case_SQL_command == 5:
+                    print(case_SQL_command)
+                else:
+                    print(f'Invalid SQL command. Valid SQL commands are {", ".join(self.SQL_COMMANDS)}')
+            else:
+                print('Invalid SQL Query missing semicolumn')
+        else:
+            print('Not enought parameters to be an SQL Query')
