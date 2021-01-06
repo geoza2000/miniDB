@@ -151,23 +151,28 @@ class Database:
         Drop table with name 'table_name' from current db
         '''
         if self._has_privillages(table_name) == False:
-            return
+            return '## ERROR - User have not enough privillages for this table'
         self.load(self.savedir)
         if self.is_locked(table_name):
-            return
+            return f'## ERROR - Table {table_name} is locked'
 
+        if table_name not in self.tables:
+            print(f'## ERROR - Table {table_name} does not exist')
+            return f'## ERROR - Table {table_name} does not exist'
         self.tables.pop(table_name)
         delattr(self, table_name)
         if os.path.isfile(f'{self.savedir}/{table_name}.pkl'):
             os.remove(f'{self.savedir}/{table_name}.pkl')
         else:
             print(f'"{self.savedir}/{table_name}.pkl" does not exist.')
+            return f'## ERROR - Table {table_name} does not exist'
         self.delete('meta_locks', f'table_name=={table_name}')
         self.delete('meta_length', f'table_name=={table_name}')
         self.delete('meta_insert_stack', f'table_name=={table_name}')
 
         # self._update()
         self.save()
+        return
 
 
     def table_from_csv(self, filename, name=None, column_types=None, primary_key=None):
@@ -324,10 +329,10 @@ class Database:
                     operatores supported -> (<,<=,==,>=,>)
         '''
         if self._has_privillages(table_name) == False:
-            return
+            return '## ERROR - User have not enough privillages for this table'
         self.load(self.savedir)
         if self.is_locked(table_name):
-            return
+            return f'## ERROR - Table {table_name} is locked'
         self.lockX_table(table_name)
         deleted = self.tables[table_name]._delete_where(condition)
         self.unlock_table(table_name)
@@ -337,6 +342,7 @@ class Database:
         if table_name[:4]!='meta':
             self._add_to_insert_stack(table_name, deleted)
         self.save()
+        return
 
     def select(self, table_name, columns, condition=None, order_by=None, asc=False,\
                top_k=None, save_as=None, return_object=False, overrideAuth=False):
@@ -386,6 +392,8 @@ class Database:
         if isinstance(table_name, list):
             has_access = True
             for table in table_name:
+                if table_name not in self.tables:
+                    return True
                 groups_access = self.tables[table].groups_access
                 if groups_access is not None:
                     self.unlock_table('users', overrideAuth=True)
@@ -402,6 +410,8 @@ class Database:
                         break
             return has_access
         else:
+            if table_name not in self.tables:
+                return True
             groups_access = self.tables[table_name].groups_access
             if groups_access is not None:
                 self.unlock_table('users', overrideAuth=True)
@@ -617,7 +627,7 @@ class Database:
         '''
         if self.tables[table_name].pk_idx is None: # if no primary key, no index
             print('## ERROR - Cant create index. Table has no primary key.')
-            return
+            return '## ERROR - Cant create index. Table has no primary key.'
         if index_name not in self.tables['meta_indexes'].index_name:
             # currently only btree is supported. This can be changed by adding another if.
             if index_type=='Btree':
@@ -629,7 +639,7 @@ class Database:
                 self.save()
         else:
             print('## ERROR - Cant create index. Another index with the same name already exists.')
-            return
+            return '## ERROR - Cant create index. Another index with the same name already exists.'
 
     def _construct_index(self, table_name, index_name):
         '''
@@ -691,7 +701,9 @@ class Database:
         'INSERT': 1,
         'DELETE': 2,
         'CREATE': 3,
-        'DROP': 4
+        'DROP': 4,
+        'UNLOCK': 5,
+        'LOCK': 6
     }
 
     def _is_sql_command(self, string):
@@ -713,19 +725,33 @@ class Database:
 
         if len(splittedQueries) >= 5:
             if self._has_privillages(splittedQueries[2]) == False:
-                return
+                return 'User have not enough privillages for this table'
             if splittedQueries[1] == 'FROM':
                 if splittedQueries[3] == 'WHERE':
                     condition = " ".join(splittedQueries[4:])
                     if condition.count("'") == len(splittedQueries[4:]) * 2:
                         condition = condition.replace("'",'').replace('=','==')
-                        self.delete(splittedQueries[2], condition)
+                        result = self.delete(splittedQueries[2], condition)
+                        if result.startswith("## ERROR"):
+                            return {
+                                "table": splittedQueries[2],
+                                "deleted": False,
+                                "error": result.split('-')[1].strip()
+                            }
+                        else:
+                            return {
+                                "table": splittedQueries[2],
+                                "deleted": True
+                            }
                 else:
                     print('You must specify the "WHERE condition"')
+                    return 'You must specify the "WHERE condition"'
             else:
                 print('You must specify the "FROM table_name" sub-command')
+                return 'You must specify the "FROM table_name" sub-command'
         else:
             print('Invalid length of arguments. DELETE command must include 5 parameters (e.g. DELETE FROM table_name WHERE condition;)')
+            return 'Invalid length of arguments. DELETE command must include 5 parameters (e.g. DELETE FROM table_name WHERE condition;)'
 
     def _sql_create(self, splittedQueries):
         '''
@@ -743,12 +769,24 @@ class Database:
                 if len(splittedQueries) == 5:
                     if splittedQueries[3] == "ON":
                         if self._has_privillages(splittedQueries[4]) == False:
-                            return
-                        self.create_index(splittedQueries[4], splittedQueries[2])
+                            return 'User have not enough privillages for this table'
+                        result = self.create_index(splittedQueries[4], splittedQueries[2])
+                        if result.startswith("## ERROR"):
+                            return {
+                                "table": splittedQueries[4],
+                                "error": result.split('-')[1].strip()
+                            }
+                        else:
+                            return {
+                                "table": splittedQueries[4],
+                                "index": splittedQueries[2]
+                            }
                     else:
                         print('You must specify the "ON table_name" sub-command')
+                        return 'You must specify the "ON table_name" sub-command'
                 else:
                     print('Invalid length of arguments. An index can only be created on a primary key. Thus you can\'t specify the columns of the index. Thus CREATE INDEX command must include 5 parameters (e.g. CREATE INDEX index_name ON table_name;)')
+                    return 'Invalid length of arguments. An index can only be created on a primary key. Thus you can\'t specify the columns of the index. Thus CREATE INDEX command must include 5 parameters (e.g. CREATE INDEX index_name ON table_name;)'
             elif sub_command == 1:
                 columnNames = []
                 columnTypes = []
@@ -764,19 +802,24 @@ class Database:
                                 columnTypes.append(str)
                             else:
                                 print(f'Column data type {splittedColumn[1]} is not supported. Supprted column data types are int, str, char(), varchar(), varchar(), text')
-                                return
+                                return f'Column data type {splittedColumn[1]} is not supported. Supprted column data types are int, str, char(), varchar(), varchar(), text'
                         else:
                             print('Column definition must have 2 parameters (e.g. column_name column_type)')
-                            return
-                    if self._has_privillages(splittedQueries[2]) == False:
-                        return
+                            return 'Column definition must have 2 parameters (e.g. column_name column_type)'
                     self.create_table(splittedQueries[2], columnNames, columnTypes)
+                    return {
+                        "table": splittedQueries[2],
+                        "columns": columnNames
+                   }
                 else:
                     print('Column definition starts and ends with parenthesis')
+                    return 'Column definition starts and ends with parenthesis'
             else:
                 print(f'Invalid SQL sub-command. Valid CREATE SQL sub-commands are {", ".join(SQL_CREATE_COMMANDS)}')
+                return f'Invalid SQL sub-command. Valid CREATE SQL sub-commands are {", ".join(SQL_CREATE_COMMANDS)}'
         else:
             print('Invalid length of arguments. CREATE command must include at least 3 parameters (e.g. CREATE DATABASE databasename;)')
+            return 'Invalid length of arguments. CREATE command must include at least 3 parameters (e.g. CREATE DATABASE databasename;)'
 
     def _sql_drop(self, splittedQueries):
         '''
@@ -785,14 +828,62 @@ class Database:
 
         if len(splittedQueries) == 3:
             if splittedQueries[1] == 'TABLE':
-                print(splittedQueries[2])
-                if self._has_privillages(splittedQueries[2]) == False:
-                        return
-                self.drop_table(splittedQueries[2])
+                result = self.drop_table(splittedQueries[2])
+                if result.startswith("## ERROR"):
+                    return {
+                        "table": splittedQueries[2],
+                        "deleted": False,
+                        "error": result.split('-')[1].strip()
+                    }
+                else:
+                    return {
+                        "table": splittedQueries[2],
+                        "deleted": True
+                    }
             else:
                 print('You can only drop tables')
+                return 'You can only drop tables'
         else:
             print('Invalid length of arguments. DROP command must include 3 parameters (e.g. DROP TABLE table_name;)')
+            return 'Invalid length of arguments. DROP command must include 3 parameters (e.g. DROP TABLE table_name;)'
+
+    def _sql_unlock(self, splittedQueries):
+        '''
+        TODO: Description
+        '''
+
+        if len(splittedQueries) == 3:
+            if splittedQueries[1] == 'TABLE':
+                print(splittedQueries[2])
+                if self._has_privillages(splittedQueries[2]) == False:
+                        return 'User have not enough privillages for this table'
+                self.unlock_table(splittedQueries[2])
+                return f'Table {splittedQueries[2]} is now unlocked'
+            else:
+                print('You can only unlock tables')
+                return 'You can only unlock tables'
+        else:
+            print('Invalid length of arguments. UNLOCK command must include 3 parameters (e.g. UNLOCK TABLE table_name;)')
+            return 'Invalid length of arguments. UNLOCK command must include 3 parameters (e.g. UNLOCK TABLE table_name;)'
+
+    def _sql_lock(self, splittedQueries):
+        '''
+        TODO: Description
+        '''
+
+        if len(splittedQueries) == 3:
+            if splittedQueries[1] == 'TABLE':
+                print(splittedQueries[2])
+                if self._has_privillages(splittedQueries[2]) == False:
+                        return 'User have not enough privillages for this table'
+                self.lockX_table(splittedQueries[2])
+                return f'Table {splittedQueries[2]} is now locked'
+            else:
+                print('You can only lock tables')
+                return 'You can only lock tables'
+        else:
+            print('Invalid length of arguments. LOCK command must include 3 parameters (e.g. LOCK TABLE table_name;)')
+            return 'Invalid length of arguments. LOCK command must include 3 parameters (e.g. LOCK TABLE table_name;)'
 
     def _sql_update(self, splittedQueries):
         '''
@@ -820,17 +911,21 @@ class Database:
                             columns.append(splittedColumn)
                         else:
                             print('Column definition must be of the format (e.g. column_name=column_value)')
-                            return
+                            return 'Column definition must be of the format (e.g. column_name=column_value)'
                     for column in columns:
                         if self._has_privillages(splittedQueries[1]) == False:
-                            return
+                            return 'User have not enough privillages for this table'
                         self.update(splittedQueries[1], column[1].strip(), column[0].strip(), columnsAndContition[1])
+                        return f'Table {splittedQueries[1]} have now the updated values'
                 else:
                     print('You must specify the "WHERE condition"')
+                    return 'You must specify the "WHERE condition"'
             else:
                 print('You must specify the "SET column1 = value1, ..."')
+                return 'You must specify the "SET column1 = value1, ..."'
         else:
             print('Invalid length of arguments. UPDATE command must include at least 6 parameters (e.g. UPDATE table_name SET column1 = value1, column2 = value2, ... WHERE condition;)')
+            return 'Invalid length of arguments. UPDATE command must include at least 6 parameters (e.g. UPDATE table_name SET column1 = value1, column2 = value2, ... WHERE condition;)'
 
     def _sql_insert(self, splittedQueries):
         '''
@@ -849,6 +944,7 @@ class Database:
                             columns.append(column.strip())
                     else:
                         print('Columns definition starts and ends with parenthesis')
+                        return 'Columns definition starts and ends with parenthesis'
                     if columnsAndValues[1].strip()[0] == "(" and columnsAndValues[1].strip()[-1] == ")":
                         for value in columnsAndValues[1].strip()[:-1][1:].split(","):
                             if value.strip()[0] == "'" and value.strip()[-1] == "'":
@@ -856,29 +952,36 @@ class Database:
                             values.append(value)
                     else:
                         print('Values definition starts and ends with parenthesis')
+                        return 'Values definition starts and ends with parenthesis'
                     if len(columns) == len(values):
                         table_columns = self.tables[splittedQueries[2]].column_names
                         if len(columns) == len(table_columns):
                             for column in columns:
                                 if column not in table_columns:
                                     print(f'Defined column "{column}" is not present in table "{splittedQueries[2]}"')
-                                    return
+                                    return f'Defined column "{column}" is not present in table "{splittedQueries[2]}"'
                             orderedValues = []
                             for column in table_columns:
                                 orderedValues.append(values[columns.index(column)])
                             if self._has_privillages(splittedQueries[2]) == False:
-                                return
+                                return 'User have not enough privillages for this table'
                             self.insert(splittedQueries[2], orderedValues)
+                            return f'Values {", ".join(orderedValues)} for columns {", ".join(self.tables[splittedQueries[2]].column_names)} have inserted'
                         else:
                             print(f'Columns defined size is deferent than the defined table ("{splittedQueries[2]}") columns size')
+                            return f'Columns defined size is deferent than the defined table ("{splittedQueries[2]}") columns size'
                     else:
                         print('Column defined size is not equal with the values size')
+                        return 'Column defined size is not equal with the values size'
                 else:
                     print('You must specify the "VALUES (value1, value2, value3, ...)"')
+                    return 'You must specify the "VALUES (value1, value2, value3, ...)"'
             else:
                 print('You must specify the "INTO table_name"')
+                return 'You must specify the "INTO table_name"'
         else:
             print('Invalid length of arguments. INSERT command must include at least 6 parameters (e.g. INSERT INTO table_name (column1, column2, column3, ...) VALUES (value1, value2, value3, ...);)')
+            return 'Invalid length of arguments. INSERT command must include at least 6 parameters (e.g. INSERT INTO table_name (column1, column2, column3, ...) VALUES (value1, value2, value3, ...);)'
 
     def sql(self, query):
         '''
@@ -890,6 +993,8 @@ class Database:
         IMPLEMENTED     5a. CREATE TABLE table_name (column1 datatype, column2 datatype, column3 datatype, ....);
         IMPLEMENTED     5b. DROP TABLE table_name;
         IMPLEMENTED     7. CREATE INDEX index_name ON table_name (column1, column2, ...);
+        IMPLEMENTED     7. UNLOCK TABLE table_name;
+        IMPLEMENTED     7. LOCK TABLE table_name;
         '''
 
         splittedQueries = query.split(' ')
@@ -898,20 +1003,25 @@ class Database:
                 splittedQueries[-1] = splittedQueries[-1][:-1]
                 case_SQL_command = self._is_sql_command(splittedQueries[0])
                 if case_SQL_command == 0:
-                    self._sql_update(splittedQueries)
+                    return self._sql_update(splittedQueries)
                 elif case_SQL_command == 1:
-                    self._sql_insert(splittedQueries)
+                    return self._sql_insert(splittedQueries)
                 elif case_SQL_command == 2:
-                    self._sql_delete(splittedQueries)
+                    return self._sql_delete(splittedQueries)
                 elif case_SQL_command == 3:
-                    self._sql_create(splittedQueries)
+                    return self._sql_create(splittedQueries)
                 elif case_SQL_command == 4:
-                    self._sql_drop(splittedQueries)
+                    return self._sql_drop(splittedQueries)
                 elif case_SQL_command == 5:
-                    print(case_SQL_command)
+                    return self._sql_unlock(splittedQueries)
+                elif case_SQL_command == 6:
+                    return self._sql_lock(splittedQueries)
                 else:
                     print(f'Invalid SQL command. Valid SQL commands are {", ".join(self.SQL_COMMANDS)}')
+                    return f'Invalid SQL command. Valid SQL commands are {", ".join(self.SQL_COMMANDS)}'
             else:
                 print('Invalid SQL Query missing semicolumn')
+                return 'Invalid SQL Query missing semicolumn'
         else:
             print('Not enought parameters to be an SQL Query')
+            return 'Not enought parameters to be an SQL Query'
