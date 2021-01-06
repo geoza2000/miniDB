@@ -12,7 +12,7 @@ class Database:
     Database class contains tables.
     '''
 
-    def __init__(self, name, load=True):
+    def __init__(self, name, username, password, load=True):
         self.tables = {}
         self._name = name
 
@@ -21,6 +21,15 @@ class Database:
         if load:
             try:
                 self.load(self.savedir)
+                self.unlock_table('users', overrideAuth=True)
+                if self.select('users', '*', f'username=={username}', return_object=True, overrideAuth=True).columns[1][0] != password:
+                    print('Access Denied. Wrong username/passsword combination')
+                    self.lockX_table('users', overrideAuth=True)
+                    self.tables = {}
+                    return
+                self.username = username
+                self.lockX_table('users')
+
                 print(f'Loaded "{name}".')
                 return
             except:
@@ -37,12 +46,37 @@ class Database:
             pass
 
         # create all the meta tables
-        self.create_table('meta_length',  ['table_name', 'no_of_rows'], [str, int])
-        self.create_table('meta_locks',  ['table_name', 'locked'], [str, bool])
-        self.create_table('meta_insert_stack',  ['table_name', 'indexes'], [str, list])
-        self.create_table('meta_indexes',  ['table_name', 'index_name'], [str, str])
+        self.create_table('meta_length',  ['table_name', 'no_of_rows'], [str, int], overrideAuth=True)
+        self.create_table('meta_locks',  ['table_name', 'locked'], [str, bool], overrideAuth=True)
+        self.create_table('meta_insert_stack',  ['table_name', 'indexes'], [str, list], overrideAuth=True)
+        self.create_table('meta_indexes',  ['table_name', 'index_name'], [str, str], overrideAuth=True)
+        self.create_table('users',  ['username', 'password', 'groups'], [str, str, list], groups_access=['admin'], overrideAuth=True)
+
+        self.unlock_table('users', overrideAuth=True)
+        self.insert('users', [username, password, ['admin']], overrideAuth=True)
+        self.lockX_table('users', overrideAuth=True)
+        self.username = username
+        print(f'Creating first admin user with username: "{username}", password: "{password}"')
+        print(f'Logged in as: {username}')
+
         self.save()
 
+    def addUser(self, username, passsword, roles):
+        if isinstance(roles, list) == False or all(isinstance(role, str) for role in roles) == False:
+            print('Role parameter must be an array of strings')
+            return
+        self.unlock_table('users')
+        if 'admin' not in self.select('users', '*', f'username=={self.username}', return_object=True, overrideAuth=True).columns[2][0]:
+            print('You must be an admin in order to add users')
+            self.lockX_table('users')
+            return
+        if len(self.select('users', '*', f'username=={username}', return_object=True, overrideAuth=True).columns[1]) > 0:
+            print(f'User with username {username} already exits')
+            self.lockX_table('users')
+            return
+        
+        self.insert('users', [username, passsword, roles])
+        self.lockX_table('users')
 
 
     def save(self):
@@ -76,6 +110,9 @@ class Database:
             setattr(self, name, self.tables[name])
 
     def drop_db(self):
+        if 'admin' not in self.select('users', '*', f'username=={self.username}', return_object=True, overrideAuth=True).columns[2][0]:
+            print('Only admin can do this')
+            return
         shutil.rmtree(self.savedir)
 
     #### IO ####
@@ -89,14 +126,14 @@ class Database:
         self._update_meta_insert_stack()
 
 
-    def create_table(self, name=None, column_names=None, column_types=None, primary_key=None, load=None):
+    def create_table(self, name=None, column_names=None, column_types=None, primary_key=None, load=None, groups_access=None, overrideAuth=False):
         '''
         This method create a new table. This table is saved and can be accessed by
         db_object.tables['table_name']
         or
         db_object.table_name
         '''
-        self.tables.update({name: Table(name=name, column_names=column_names, column_types=column_types, primary_key=primary_key, load=load)})
+        self.tables.update({name: Table(name=name, column_names=column_names, column_types=column_types, primary_key=primary_key, load=load, groups_access=groups_access)})
         # self._name = Table(name=name, column_names=column_names, column_types=column_types, load=load)
         # check that new dynamic var doesnt exist already
         if name not in self.__dir__():
@@ -113,6 +150,8 @@ class Database:
         '''
         Drop table with name 'table_name' from current db
         '''
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -161,6 +200,8 @@ class Database:
 
 
     def table_to_csv(self, table_name, filename=None):
+        if self._has_privillages(table_name) == False:
+            return
         res = ''
         for row in [self.tables[table_name].column_names]+self.tables[table_name].data:
             res+=str(row)[1:-1].replace('\'', '').replace('"','').replace(' ','')+'\n'
@@ -175,7 +216,6 @@ class Database:
         '''
         Add table obj to database.
         '''
-
         self.tables.update({new_table._name: new_table})
         if new_table._name not in self.__dir__():
             setattr(self, new_table._name, new_table)
@@ -205,6 +245,8 @@ class Database:
         column_name -> the column that will be casted (needs to exist in table)
         cast_type -> needs to be a python type like str int etc. NOT in ''
         '''
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -214,7 +256,7 @@ class Database:
         self._update()
         self.save()
 
-    def insert(self, table_name, row, lock_load_save=True):
+    def insert(self, table_name, row, lock_load_save=True, overrideAuth=False):
         '''
         Inserts into table
 
@@ -222,13 +264,16 @@ class Database:
         row -> a list of the values that are going to be inserted (will be automatically casted to predifined type)
         lock_load_save -> If false, user need to load, lock and save the states of the database (CAUTION). Usefull for bulk loading
         '''
+        if overrideAuth == False:
+         if self._has_privillages(table_name) == False:            
+            return
         if lock_load_save:
             self.load(self.savedir)
             if self.is_locked(table_name):
                 return
             # fetch the insert_stack. For more info on the insert_stack
             # check the insert_stack meta table
-            self.lockX_table(table_name)
+            self.lockX_table(table_name, overrideAuth=True)
         insert_stack = self._get_insert_stack_for_table(table_name)
         try:
             self.tables[table_name]._insert(row, insert_stack)
@@ -238,7 +283,7 @@ class Database:
         # sleep(2)
         self._update_meta_insert_stack_for_tb(table_name, insert_stack[:-1])
         if lock_load_save:
-            self.unlock_table(table_name)
+            self.unlock_table(table_name, overrideAuth=True)
             self._update()
             self.save()
 
@@ -256,6 +301,8 @@ class Database:
 
                     operatores supported -> (<,<=,==,>=,>)
         '''
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -276,6 +323,8 @@ class Database:
 
                     operatores supported -> (<,<=,==,>=,>)
         '''
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -290,7 +339,7 @@ class Database:
         self.save()
 
     def select(self, table_name, columns, condition=None, order_by=None, asc=False,\
-               top_k=None, save_as=None, return_object=False):
+               top_k=None, save_as=None, return_object=False, overrideAuth=False):
         '''
         Selects and outputs a table's data where condtion is met.
 
@@ -308,10 +357,13 @@ class Database:
         return_object -> If true, the result will be a table object (usefull for internal usage). Def: False (the result will be printed)
 
         '''
+        if overrideAuth == False:
+         if self._has_privillages(table_name) == False:            
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
-        self.lockX_table(table_name)
+        self.lockX_table(table_name, overrideAuth=True)
         if condition is not None:
             condition_column = split_condition(condition)[0]
         if self._has_index(table_name) and condition_column==self.tables[table_name].column_names[self.tables[table_name].pk_idx]:
@@ -320,7 +372,7 @@ class Database:
             table = self.tables[table_name]._select_where_with_btree(columns, bt, condition, order_by, asc, top_k)
         else:
             table = self.tables[table_name]._select_where(columns, condition, order_by, asc, top_k)
-        self.unlock_table(table_name)
+        self.unlock_table(table_name, overrideAuth=True)
         if save_as is not None:
             table._name = save_as
             self.table_from_object(table)
@@ -330,12 +382,50 @@ class Database:
             else:
                 table.show()
 
+    def _has_privillages(self, table_name):
+        if isinstance(table_name, list):
+            has_access = True
+            for table in table_name:
+                groups_access = self.tables[table].groups_access
+                if groups_access is not None:
+                    self.unlock_table('users', overrideAuth=True)
+                    group_exists = False
+                    for group in self.select('users', '*', f'username=={self.username}', return_object=True, overrideAuth=True).columns[2][0]:
+                        if group in groups_access:
+                            group_exists = True
+                            break
+                    self.lockX_table('users', overrideAuth=True)
+
+                    if not group_exists:
+                        print(f'You dont have the privilages. Groups {", ".join(groups_access)} have the privillages')
+                        has_access = False
+                        break
+            return has_access
+        else:
+            groups_access = self.tables[table_name].groups_access
+            if groups_access is not None:
+                self.unlock_table('users', overrideAuth=True)
+                group_exists = False
+                for group in self.select('users', '*', f'username=={self.username}', return_object=True, overrideAuth=True).columns[2][0]:
+                    if group in groups_access:
+                        group_exists = True
+                        break
+                self.lockX_table('users', overrideAuth=True)
+
+                if not group_exists:
+                    print(f'You dont have the privilages. Groups {", ".join(groups_access)} have the privillages')
+                    return False
+                else:
+                    return True
+
     def show_table(self, table_name, no_of_rows=None):
         '''
         Print a table using a nice tabular design (tabulate)
 
         table_name -> table's name (needs to exist in database)
         '''
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -349,7 +439,8 @@ class Database:
         column_name -> the column that will be used to sort
         asc -> If True sort will return results using an ascending order. Def: False
         '''
-
+        if self._has_privillages(table_name) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(table_name):
             return
@@ -372,6 +463,8 @@ class Database:
         save_as -> The name that will be used to save the resulting table in the database. Def: None (no save)
         return_object -> If true, the result will be a table object (usefull for internal usage). Def: False (the result will be printed)
         '''
+        if self._has_privillages([left_table_name, right_table_name]) == False:
+            return
         self.load(self.savedir)
         if self.is_locked(left_table_name) or self.is_locked(right_table_name):
             print(f'Table/Tables are currently locked')
@@ -387,12 +480,15 @@ class Database:
             else:
                 res.show()
 
-    def lockX_table(self, table_name):
+    def lockX_table(self, table_name, overrideAuth=False):
         '''
         Locks the specified table using the exclusive lock (X)
 
         table_name -> table's name (needs to exist in database)
         '''
+        if overrideAuth == False:
+         if self._has_privillages(table_name) == False:            
+            return
         if table_name[:4]=='meta':
             return
 
@@ -400,12 +496,15 @@ class Database:
         self._save_locks()
         # print(f'Locking table "{table_name}"')
 
-    def unlock_table(self, table_name):
+    def unlock_table(self, table_name, overrideAuth=False):
         '''
         Unlocks the specified table that is exclusivelly locked (X)
 
         table_name -> table's name (needs to exist in database)
         '''
+        if overrideAuth == False:
+         if self._has_privillages(table_name) == False:            
+            return
         self.tables['meta_locks']._update_row(False, 'locked', f'table_name=={table_name}')
         self._save_locks()
         # print(f'Unlocking table "{table_name}"')
@@ -582,6 +681,11 @@ class Database:
         f.close()
         return index
 
+
+
+
+
+
     SQL_COMMANDS = {
         'UPDATE': 0,
         'INSERT': 1,
@@ -608,6 +712,8 @@ class Database:
         '''
 
         if len(splittedQueries) >= 5:
+            if self._has_privillages(splittedQueries[2]) == False:
+                return
             if splittedQueries[1] == 'FROM':
                 if splittedQueries[3] == 'WHERE':
                     condition = " ".join(splittedQueries[4:])
@@ -636,7 +742,9 @@ class Database:
             if sub_command == 0:
                 if len(splittedQueries) == 5:
                     if splittedQueries[3] == "ON":
-                        self.create_index(splittedQueries[4], splittedQueries[2], )
+                        if self._has_privillages(splittedQueries[4]) == False:
+                            return
+                        self.create_index(splittedQueries[4], splittedQueries[2])
                     else:
                         print('You must specify the "ON table_name" sub-command')
                 else:
@@ -660,6 +768,8 @@ class Database:
                         else:
                             print('Column definition must have 2 parameters (e.g. column_name column_type)')
                             return
+                    if self._has_privillages(splittedQueries[2]) == False:
+                        return
                     self.create_table(splittedQueries[2], columnNames, columnTypes)
                 else:
                     print('Column definition starts and ends with parenthesis')
@@ -676,6 +786,8 @@ class Database:
         if len(splittedQueries) == 3:
             if splittedQueries[1] == 'TABLE':
                 print(splittedQueries[2])
+                if self._has_privillages(splittedQueries[2]) == False:
+                        return
                 self.drop_table(splittedQueries[2])
             else:
                 print('You can only drop tables')
@@ -710,6 +822,8 @@ class Database:
                             print('Column definition must be of the format (e.g. column_name=column_value)')
                             return
                     for column in columns:
+                        if self._has_privillages(splittedQueries[1]) == False:
+                            return
                         self.update(splittedQueries[1], column[1].strip(), column[0].strip(), columnsAndContition[1])
                 else:
                     print('You must specify the "WHERE condition"')
@@ -752,6 +866,8 @@ class Database:
                             orderedValues = []
                             for column in table_columns:
                                 orderedValues.append(values[columns.index(column)])
+                            if self._has_privillages(splittedQueries[2]) == False:
+                                return
                             self.insert(splittedQueries[2], orderedValues)
                         else:
                             print(f'Columns defined size is deferent than the defined table ("{splittedQueries[2]}") columns size')

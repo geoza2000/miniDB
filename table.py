@@ -21,7 +21,7 @@ class Table:
             - a dictionary that includes the appropriate info (all the attributes in __init__)
 
     '''
-    def __init__(self, name=None, column_names=None, column_types=None, primary_key=None, load=None):
+    def __init__(self, name=None, column_names=None, column_types=None, primary_key=None, load=None, groups_access=None):
 
         if load is not None:
             # if load is a dict, replace the object dict with it (replaces the object with the specified one)
@@ -41,6 +41,8 @@ class Table:
                 raise ValueError('Need same number of column names and types.')
 
             self.column_names = column_names
+
+            self.groups_access = groups_access
 
             self.columns = []
 
@@ -65,6 +67,7 @@ class Table:
 
 
             self._update()
+
 
     # if any of the name, columns_names and column types are none. return an empty table object
 
